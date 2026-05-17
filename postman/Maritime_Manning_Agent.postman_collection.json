@@ -1,0 +1,678 @@
+{
+    "info": {
+        "_postman_id": "maritime-manning-agent-collection",
+        "name": "Maritime Manning Agent — Document Extraction API",
+        "description": "Complete API collection for the Maritime Manning Agent document extraction service. Import this file along with the environment file, or use the embedded variables.\n\n**Quick Start:**\n1. Start the server: `npm run dev`\n2. Upload a document via POST /api/extract\n3. Use the returned `sessionId` to poll session state\n4. Run validation once 2+ documents are uploaded\n5. Fetch the compliance report",
+        "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+    },
+    "variable": [
+        {
+            "key": "baseUrl",
+            "value": "http://localhost:3000",
+            "type": "string"
+        },
+        {
+            "key": "sessionId",
+            "value": "",
+            "type": "string",
+            "description": "Auto-populated by the extract request script"
+        },
+        {
+            "key": "jobId",
+            "value": "",
+            "type": "string",
+            "description": "Auto-populated by async extract"
+        },
+        {
+            "key": "extractionId",
+            "value": "",
+            "type": "string",
+            "description": "Auto-populated after extraction completes"
+        }
+    ],
+    "item": [
+        {
+            "name": "Health",
+            "item": [
+                {
+                    "name": "GET /api/health",
+                    "request": {
+                        "method": "GET",
+                        "url": {
+                            "raw": "{{baseUrl}}/api/health",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "api",
+                                "health"
+                            ]
+                        },
+                        "description": "Check server health and dependency status (database, queue, LLM provider)."
+                    },
+                    "response": [
+                        {
+                            "name": "200 OK",
+                            "status": "OK",
+                            "code": 200,
+                            "body": "{\n  \"status\": \"OK\",\n  \"version\": \"1.0.0\",\n  \"uptimeSeconds\": 120,\n  \"dependencies\": {\n    \"database\": \"OK\",\n    \"queue\": \"OK\",\n    \"llmProvider\": \"OK\"\n  },\n  \"timestamp\": \"2026-05-17T08:00:00Z\"\n}"
+                        }
+                    ],
+                    "event": [
+                        {
+                            "listen": "test",
+                            "script": {
+                                "type": "text/javascript",
+                                "exec": [
+                                    "pm.test('Status is 200', () => pm.response.to.have.status(200));",
+                                    "pm.test('All dependencies OK', () => {",
+                                    "  const body = pm.response.json();",
+                                    "  pm.expect(body.status).to.eql('OK');",
+                                    "  pm.expect(body.dependencies.database).to.eql('OK');",
+                                    "  pm.expect(body.dependencies.queue).to.eql('OK');",
+                                    "});"
+                                ]
+                            }
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "name": "Extract",
+            "item": [
+                {
+                    "name": "POST /api/extract — Sync (new session)",
+                    "request": {
+                        "method": "POST",
+                        "url": {
+                            "raw": "{{baseUrl}}/api/extract?mode=sync",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "api",
+                                "extract"
+                            ],
+                            "query": [
+                                {
+                                    "key": "mode",
+                                    "value": "sync",
+                                    "description": "sync | async"
+                                }
+                            ]
+                        },
+                        "description": "Upload a document (JPEG, PNG or PDF). A new session is auto-created when sessionId is omitted.\n\n**Max file size:** 10 MB\n**Accepted types:** image/jpeg, image/png, application/pdf\n\nThe test script saves `sessionId` and `extractionId` to collection variables for use in subsequent requests.",
+                        "body": {
+                            "mode": "formdata",
+                            "formdata": [
+                                {
+                                    "key": "document",
+                                    "type": "file",
+                                    "src": [],
+                                    "description": "Upload any seafarer certificate image or PDF"
+                                },
+                                {
+                                    "key": "sessionId",
+                                    "value": "",
+                                    "type": "text",
+                                    "description": "Optional — leave blank to auto-create a session"
+                                }
+                            ]
+                        }
+                    },
+                    "response": [
+                        {
+                            "name": "200 Extracted",
+                            "status": "OK",
+                            "code": 200,
+                            "body": "{\n  \"id\": \"uuid\",\n  \"sessionId\": \"uuid\",\n  \"fileName\": \"COC_Salonoy.jpg\",\n  \"documentType\": \"COC\",\n  \"documentName\": \"Certificate of Competency\",\n  \"applicableRole\": \"DECK\",\n  \"category\": \"CERTIFICATION\",\n  \"confidence\": \"HIGH\",\n  \"holderName\": \"Francisco J. Salonoy\",\n  \"dateOfBirth\": \"15/06/1985\",\n  \"sirbNumber\": \"C1234567\",\n  \"passportNumber\": null,\n  \"fields\": [],\n  \"validity\": { \"dateOfExpiry\": \"01/01/2027\", \"isExpired\": false, \"daysUntilExpiry\": 600 },\n  \"compliance\": {},\n  \"medicalData\": {},\n  \"flags\": [],\n  \"isExpired\": false,\n  \"processingTimeMs\": 3200,\n  \"summary\": \"...\",\n  \"createdAt\": \"2026-05-17T08:00:00Z\"\n}"
+                        },
+                        {
+                            "name": "200 Deduplicated",
+                            "status": "OK",
+                            "code": 200,
+                            "header": [
+                                {
+                                    "key": "X-Deduplicated",
+                                    "value": "true"
+                                }
+                            ],
+                            "body": "{ \"id\": \"uuid\", \"sessionId\": \"uuid\", ... }"
+                        },
+                        {
+                            "name": "400 Unsupported Format",
+                            "status": "Bad Request",
+                            "code": 400,
+                            "body": "{ \"error\": \"UNSUPPORTED_FORMAT\", \"message\": \"...\" }"
+                        },
+                        {
+                            "name": "413 File Too Large",
+                            "status": "Payload Too Large",
+                            "code": 413,
+                            "body": "{ \"error\": \"FILE_TOO_LARGE\", \"message\": \"File exceeds the 10MB size limit.\" }"
+                        }
+                    ],
+                    "event": [
+                        {
+                            "listen": "test",
+                            "script": {
+                                "type": "text/javascript",
+                                "exec": [
+                                    "const deduplicated = pm.response.headers.get('X-Deduplicated') === 'true';",
+                                    "",
+                                    "pm.test('Status is 200', () => pm.response.to.have.status(200));",
+                                    "",
+                                    "if (!deduplicated) {",
+                                    "  const body = pm.response.json();",
+                                    "  if (body.sessionId) {",
+                                    "    pm.collectionVariables.set('sessionId', body.sessionId);",
+                                    "    console.log('sessionId saved:', body.sessionId);",
+                                    "  }",
+                                    "  if (body.id) {",
+                                    "    pm.collectionVariables.set('extractionId', body.id);",
+                                    "    console.log('extractionId saved:', body.id);",
+                                    "  }",
+                                    "} else {",
+                                    "  console.log('Deduplicated response — no new extraction');",
+                                    "}"
+                                ]
+                            }
+                        }
+                    ]
+                },
+                {
+                    "name": "POST /api/extract — Async",
+                    "request": {
+                        "method": "POST",
+                        "url": {
+                            "raw": "{{baseUrl}}/api/extract?mode=async",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "api",
+                                "extract"
+                            ],
+                            "query": [
+                                {
+                                    "key": "mode",
+                                    "value": "async"
+                                }
+                            ]
+                        },
+                        "description": "Submit a document for background processing. Returns 202 immediately with a `jobId`. Poll `GET /api/jobs/:jobId` for the result.",
+                        "body": {
+                            "mode": "formdata",
+                            "formdata": [
+                                {
+                                    "key": "document",
+                                    "type": "file",
+                                    "src": []
+                                },
+                                {
+                                    "key": "sessionId",
+                                    "value": "{{sessionId}}",
+                                    "type": "text"
+                                }
+                            ]
+                        }
+                    },
+                    "response": [
+                        {
+                            "name": "202 Accepted",
+                            "status": "Accepted",
+                            "code": 202,
+                            "body": "{\n  \"jobId\": \"uuid\",\n  \"sessionId\": \"uuid\",\n  \"status\": \"QUEUED\",\n  \"pollUrl\": \"/api/jobs/uuid\",\n  \"estimatedWaitMs\": 6000\n}"
+                        }
+                    ],
+                    "event": [
+                        {
+                            "listen": "test",
+                            "script": {
+                                "type": "text/javascript",
+                                "exec": [
+                                    "pm.test('Status is 202', () => pm.response.to.have.status(202));",
+                                    "const body = pm.response.json();",
+                                    "if (body.jobId) {",
+                                    "  pm.collectionVariables.set('jobId', body.jobId);",
+                                    "  console.log('jobId saved:', body.jobId);",
+                                    "}",
+                                    "if (body.sessionId) {",
+                                    "  pm.collectionVariables.set('sessionId', body.sessionId);",
+                                    "}"
+                                ]
+                            }
+                        }
+                    ]
+                },
+                {
+                    "name": "POST /api/extract — Add to existing session",
+                    "request": {
+                        "method": "POST",
+                        "url": {
+                            "raw": "{{baseUrl}}/api/extract?mode=sync",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "api",
+                                "extract"
+                            ],
+                            "query": [
+                                {
+                                    "key": "mode",
+                                    "value": "sync"
+                                }
+                            ]
+                        },
+                        "description": "Upload a second document to the same session (uses saved `sessionId`). Upload at least 2 different documents to enable validation.",
+                        "body": {
+                            "mode": "formdata",
+                            "formdata": [
+                                {
+                                    "key": "document",
+                                    "type": "file",
+                                    "src": []
+                                },
+                                {
+                                    "key": "sessionId",
+                                    "value": "{{sessionId}}",
+                                    "type": "text"
+                                }
+                            ]
+                        }
+                    },
+                    "event": [
+                        {
+                            "listen": "test",
+                            "script": {
+                                "type": "text/javascript",
+                                "exec": [
+                                    "pm.test('Status is 200', () => pm.response.to.have.status(200));",
+                                    "const body = pm.response.json();",
+                                    "if (body.id) pm.collectionVariables.set('extractionId', body.id);"
+                                ]
+                            }
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "name": "Jobs",
+            "item": [
+                {
+                    "name": "GET /api/jobs/:jobId",
+                    "request": {
+                        "method": "GET",
+                        "url": {
+                            "raw": "{{baseUrl}}/api/jobs/{{jobId}}",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "api",
+                                "jobs",
+                                "{{jobId}}"
+                            ]
+                        },
+                        "description": "Poll the status of an async extraction job. Keep polling until status is `COMPLETE` or `FAILED`.\n\n**States:** QUEUED → PROCESSING → COMPLETE | FAILED"
+                    },
+                    "response": [
+                        {
+                            "name": "200 QUEUED",
+                            "code": 200,
+                            "body": "{\n  \"jobId\": \"uuid\",\n  \"status\": \"QUEUED\",\n  \"queuePosition\": 2,\n  \"startedAt\": null,\n  \"estimatedCompleteMs\": 6000\n}"
+                        },
+                        {
+                            "name": "200 PROCESSING",
+                            "code": 200,
+                            "body": "{\n  \"jobId\": \"uuid\",\n  \"status\": \"PROCESSING\",\n  \"queuePosition\": null,\n  \"startedAt\": \"2026-05-17T08:00:00Z\",\n  \"estimatedCompleteMs\": 3200\n}"
+                        },
+                        {
+                            "name": "200 COMPLETE",
+                            "code": 200,
+                            "body": "{\n  \"jobId\": \"uuid\",\n  \"status\": \"COMPLETE\",\n  \"extractionId\": \"uuid\",\n  \"result\": { ... },\n  \"completedAt\": \"2026-05-17T08:00:11Z\"\n}"
+                        },
+                        {
+                            "name": "200 FAILED",
+                            "code": 200,
+                            "body": "{\n  \"jobId\": \"uuid\",\n  \"status\": \"FAILED\",\n  \"error\": \"LLM_JSON_PARSE_FAIL\",\n  \"message\": \"...\",\n  \"failedAt\": \"2026-05-17T08:00:11Z\",\n  \"retryable\": true\n}"
+                        },
+                        {
+                            "name": "404 Not Found",
+                            "code": 404,
+                            "body": "{ \"error\": \"JOB_NOT_FOUND\", \"message\": \"Job 'uuid' not found.\" }"
+                        }
+                    ],
+                    "event": [
+                        {
+                            "listen": "test",
+                            "script": {
+                                "type": "text/javascript",
+                                "exec": [
+                                    "pm.test('Status is 200', () => pm.response.to.have.status(200));",
+                                    "const body = pm.response.json();",
+                                    "console.log('Job status:', body.status);",
+                                    "if (body.status === 'COMPLETE' && body.extractionId) {",
+                                    "  pm.collectionVariables.set('extractionId', body.extractionId);",
+                                    "}"
+                                ]
+                            }
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "name": "Sessions",
+            "item": [
+                {
+                    "name": "GET /api/sessions/:sessionId",
+                    "request": {
+                        "method": "GET",
+                        "url": {
+                            "raw": "{{baseUrl}}/api/sessions/{{sessionId}}",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "api",
+                                "sessions",
+                                "{{sessionId}}"
+                            ]
+                        },
+                        "description": "Get a summary of all documents in the session, along with `detectedRole` and `overallHealth`.\n\n**overallHealth:** OK | WARN | CRITICAL"
+                    },
+                    "response": [
+                        {
+                            "name": "200 Session Detail",
+                            "code": 200,
+                            "body": "{\n  \"sessionId\": \"uuid\",\n  \"documentCount\": 3,\n  \"detectedRole\": \"DECK\",\n  \"overallHealth\": \"WARN\",\n  \"documents\": [\n    {\n      \"id\": \"uuid\",\n      \"fileName\": \"COC_Salonoy.jpg\",\n      \"documentType\": \"COC\",\n      \"applicableRole\": \"DECK\",\n      \"holderName\": \"Francisco J. Salonoy\",\n      \"confidence\": \"HIGH\",\n      \"isExpired\": false,\n      \"flagCount\": 0,\n      \"criticalFlagCount\": 0,\n      \"createdAt\": \"2026-05-17T08:00:00Z\"\n    }\n  ],\n  \"pendingJobs\": []\n}"
+                        },
+                        {
+                            "name": "404 Not Found",
+                            "code": 404,
+                            "body": "{ \"error\": \"SESSION_NOT_FOUND\", \"message\": \"Session 'uuid' not found.\" }"
+                        }
+                    ],
+                    "event": [
+                        {
+                            "listen": "test",
+                            "script": {
+                                "type": "text/javascript",
+                                "exec": [
+                                    "pm.test('Status is 200', () => pm.response.to.have.status(200));",
+                                    "const body = pm.response.json();",
+                                    "pm.test('Has documentCount', () => pm.expect(body.documentCount).to.be.a('number'));",
+                                    "pm.test('Has detectedRole', () => pm.expect(body.detectedRole).to.be.a('string'));",
+                                    "pm.test('Has overallHealth', () => pm.expect(['OK','WARN','CRITICAL']).to.include(body.overallHealth));"
+                                ]
+                            }
+                        }
+                    ]
+                },
+                {
+                    "name": "POST /api/sessions/:sessionId/validate",
+                    "request": {
+                        "method": "POST",
+                        "url": {
+                            "raw": "{{baseUrl}}/api/sessions/{{sessionId}}/validate",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "api",
+                                "sessions",
+                                "{{sessionId}}",
+                                "validate"
+                            ]
+                        },
+                        "description": "Run cross-document compliance assessment for the session. Requires at least 2 uploaded documents.\n\nSends all extraction records to the LLM and returns a structured compliance verdict (APPROVED | CONDITIONAL | REJECTED) with a 0–100 score.",
+                        "body": {
+                            "mode": "raw",
+                            "raw": "",
+                            "options": {
+                                "raw": {
+                                    "language": "json"
+                                }
+                            }
+                        }
+                    },
+                    "response": [
+                        {
+                            "name": "200 Validation Result",
+                            "code": 200,
+                            "body": "{\n  \"sessionId\": \"uuid\",\n  \"holderProfile\": {\n    \"fullName\": \"Francisco J. Salonoy\",\n    \"dateOfBirth\": \"15/06/1985\",\n    \"detectedRole\": \"DECK\"\n  },\n  \"consistencyChecks\": [\n    { \"field\": \"fullName\", \"status\": \"CONSISTENT\", \"values\": [\"Francisco J. Salonoy\"] }\n  ],\n  \"missingDocuments\": [],\n  \"expiringDocuments\": [],\n  \"medicalFlags\": [],\n  \"overallStatus\": \"APPROVED\",\n  \"overallScore\": 92,\n  \"summary\": \"...\",\n  \"recommendations\": [],\n  \"validatedAt\": \"2026-05-17T08:05:00Z\"\n}"
+                        },
+                        {
+                            "name": "400 Insufficient Documents",
+                            "code": 400,
+                            "body": "{ \"error\": \"INSUFFICIENT_DOCUMENTS\", \"message\": \"At least 2 documents are required to run compliance validation.\" }"
+                        },
+                        {
+                            "name": "404 Session Not Found",
+                            "code": 404,
+                            "body": "{ \"error\": \"SESSION_NOT_FOUND\", \"message\": \"Session 'uuid' not found.\" }"
+                        }
+                    ],
+                    "event": [
+                        {
+                            "listen": "test",
+                            "script": {
+                                "type": "text/javascript",
+                                "exec": [
+                                    "pm.test('Status is 200', () => pm.response.to.have.status(200));",
+                                    "const body = pm.response.json();",
+                                    "pm.test('Has overallStatus', () => pm.expect(['APPROVED','CONDITIONAL','REJECTED']).to.include(body.overallStatus));",
+                                    "pm.test('Has overallScore 0-100', () => pm.expect(body.overallScore).to.be.within(0, 100));",
+                                    "console.log('Verdict:', body.overallStatus, '| Score:', body.overallScore);"
+                                ]
+                            }
+                        }
+                    ]
+                },
+                {
+                    "name": "GET /api/sessions/:sessionId/report",
+                    "request": {
+                        "method": "GET",
+                        "url": {
+                            "raw": "{{baseUrl}}/api/sessions/{{sessionId}}/report",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "api",
+                                "sessions",
+                                "{{sessionId}}",
+                                "report"
+                            ]
+                        },
+                        "description": "Generate a complete compliance report from stored data — no LLM call. Includes document checklist, medical summary, compliance issues sorted by severity, expiring documents, and an overall hire/no-hire verdict."
+                    },
+                    "response": [
+                        {
+                            "name": "200 Compliance Report",
+                            "code": 200,
+                            "body": "{\n  \"reportId\": \"uuid\",\n  \"sessionId\": \"uuid\",\n  \"generatedAt\": \"2026-05-17T08:10:00Z\",\n  \"holderSummary\": {\n    \"fullName\": \"Francisco J. Salonoy\",\n    \"dateOfBirth\": \"15/06/1985\",\n    \"nationality\": \"Filipino\",\n    \"sirbNumber\": \"C1234567\",\n    \"passportNumber\": \"P1234567\",\n    \"rank\": \"Chief Officer\",\n    \"detectedRole\": \"DECK\"\n  },\n  \"overallVerdict\": {\n    \"status\": \"APPROVED\",\n    \"score\": 92,\n    \"health\": \"OK\",\n    \"summary\": \"...\"\n  },\n  \"documentChecklist\": [\n    {\n      \"documentType\": \"COC\",\n      \"status\": \"PRESENT\",\n      \"fileName\": \"COC_Salonoy.jpg\",\n      \"expiryDate\": \"01/01/2027\",\n      \"daysUntilExpiry\": 600,\n      \"flags\": []\n    }\n  ],\n  \"medicalSummary\": {\n    \"fitnessResult\": \"FIT\",\n    \"drugTestResult\": \"NEGATIVE\",\n    \"pemeExpiry\": \"01/03/2027\"\n  },\n  \"complianceIssues\": [],\n  \"expiringDocuments\": [],\n  \"missingDocuments\": [],\n  \"recommendations\": []\n}"
+                        },
+                        {
+                            "name": "404 Session Not Found",
+                            "code": 404,
+                            "body": "{ \"error\": \"SESSION_NOT_FOUND\", \"message\": \"Session 'uuid' not found.\" }"
+                        }
+                    ],
+                    "event": [
+                        {
+                            "listen": "test",
+                            "script": {
+                                "type": "text/javascript",
+                                "exec": [
+                                    "pm.test('Status is 200', () => pm.response.to.have.status(200));",
+                                    "const body = pm.response.json();",
+                                    "pm.test('Has reportId', () => pm.expect(body.reportId).to.be.a('string'));",
+                                    "pm.test('Has holderSummary', () => pm.expect(body.holderSummary).to.be.an('object'));",
+                                    "pm.test('Has documentChecklist', () => pm.expect(body.documentChecklist).to.be.an('array'));",
+                                    "pm.test('Has overallVerdict', () => pm.expect(body.overallVerdict).to.be.an('object'));",
+                                    "console.log('Verdict:', body.overallVerdict?.status, '| Health:', body.overallVerdict?.health);"
+                                ]
+                            }
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "name": "Error Cases",
+            "item": [
+                {
+                    "name": "400 — Unsupported file type",
+                    "request": {
+                        "method": "POST",
+                        "url": {
+                            "raw": "{{baseUrl}}/api/extract?mode=sync",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "api",
+                                "extract"
+                            ],
+                            "query": [
+                                {
+                                    "key": "mode",
+                                    "value": "sync"
+                                }
+                            ]
+                        },
+                        "description": "Upload a .txt file to trigger UNSUPPORTED_FORMAT.",
+                        "body": {
+                            "mode": "formdata",
+                            "formdata": [
+                                {
+                                    "key": "document",
+                                    "type": "file",
+                                    "src": []
+                                }
+                            ]
+                        }
+                    },
+                    "event": [
+                        {
+                            "listen": "test",
+                            "script": {
+                                "type": "text/javascript",
+                                "exec": [
+                                    "pm.test('Status is 400', () => pm.response.to.have.status(400));",
+                                    "pm.test('Error code is UNSUPPORTED_FORMAT', () => {",
+                                    "  pm.expect(pm.response.json().error).to.eql('UNSUPPORTED_FORMAT');",
+                                    "});"
+                                ]
+                            }
+                        }
+                    ]
+                },
+                {
+                    "name": "404 — Job not found",
+                    "request": {
+                        "method": "GET",
+                        "url": {
+                            "raw": "{{baseUrl}}/api/jobs/00000000-0000-0000-0000-000000000000",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "api",
+                                "jobs",
+                                "00000000-0000-0000-0000-000000000000"
+                            ]
+                        }
+                    },
+                    "event": [
+                        {
+                            "listen": "test",
+                            "script": {
+                                "type": "text/javascript",
+                                "exec": [
+                                    "pm.test('Status is 404', () => pm.response.to.have.status(404));",
+                                    "pm.test('Error code is JOB_NOT_FOUND', () => {",
+                                    "  pm.expect(pm.response.json().error).to.eql('JOB_NOT_FOUND');",
+                                    "});"
+                                ]
+                            }
+                        }
+                    ]
+                },
+                {
+                    "name": "404 — Session not found",
+                    "request": {
+                        "method": "GET",
+                        "url": {
+                            "raw": "{{baseUrl}}/api/sessions/00000000-0000-0000-0000-000000000000",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "api",
+                                "sessions",
+                                "00000000-0000-0000-0000-000000000000"
+                            ]
+                        }
+                    },
+                    "event": [
+                        {
+                            "listen": "test",
+                            "script": {
+                                "type": "text/javascript",
+                                "exec": [
+                                    "pm.test('Status is 404', () => pm.response.to.have.status(404));",
+                                    "pm.test('Error code is SESSION_NOT_FOUND', () => {",
+                                    "  pm.expect(pm.response.json().error).to.eql('SESSION_NOT_FOUND');",
+                                    "});"
+                                ]
+                            }
+                        }
+                    ]
+                },
+                {
+                    "name": "400 — Validate with < 2 documents",
+                    "request": {
+                        "method": "POST",
+                        "url": {
+                            "raw": "{{baseUrl}}/api/sessions/{{sessionId}}/validate",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "api",
+                                "sessions",
+                                "{{sessionId}}",
+                                "validate"
+                            ]
+                        },
+                        "description": "Call validate immediately after creating a session with only 1 document.",
+                        "body": {
+                            "mode": "raw",
+                            "raw": ""
+                        }
+                    },
+                    "event": [
+                        {
+                            "listen": "test",
+                            "script": {
+                                "type": "text/javascript",
+                                "exec": [
+                                    "pm.test('Status is 400', () => pm.response.to.have.status(400));",
+                                    "pm.test('Error code is INSUFFICIENT_DOCUMENTS', () => {",
+                                    "  pm.expect(pm.response.json().error).to.eql('INSUFFICIENT_DOCUMENTS');",
+                                    "});"
+                                ]
+                            }
+                        }
+                    ]
+                }
+            ]
+        }
+    ]
+}

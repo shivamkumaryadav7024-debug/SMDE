@@ -10,9 +10,7 @@
         "start": "node dist/index.js",
         "db:generate": "drizzle-kit generate",
         "db:migrate": "tsx src/db/migrate.ts",
-        "db:studio": "drizzle-kit studio",
-        "test": "vitest run",
-        "test:watch": "vitest"
+        "db:studio": "drizzle-kit studio"
     },
     "dependencies": {
         "@fastify/multipart": "^9.0.1",
