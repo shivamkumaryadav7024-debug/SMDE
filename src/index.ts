@@ -41,4 +41,19 @@ process.on("unhandledRejection", (err) => {
   process.exit(1);
 });
 
+async function shutdown(signal: string) {
+  console.log(`[process] Received ${signal}, shutting down gracefully...`);
+  try {
+    const { getBoss } = await import("./queue/boss.js");
+    await getBoss().stop({ graceful: true });
+    console.log("[process] pg-boss stopped");
+  } catch {
+    // Boss may not have started yet
+  }
+  process.exit(0);
+}
+
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
+
 start();

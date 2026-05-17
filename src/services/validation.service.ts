@@ -73,8 +73,8 @@ export async function runValidation(
   const prompt = buildValidationPrompt(summaries);
   const llm = getLLMProvider();
 
-  // Single attempt — validation prompt is well-structured; no retry needed here
-  const raw = await llm.extractDocument([], "text/plain", prompt);
+  // Text-only call — no document images needed for cross-document validation
+  const raw = await llm.generateText(prompt);
 
   let parsed: LLMValidationOutput;
   try {

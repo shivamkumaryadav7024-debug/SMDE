@@ -1,16 +1,17 @@
 export interface LLMProvider {
   /**
-   * Send one or more file buffers (images or PDFs converted to images) to the
-   * LLM along with a prompt and return the raw text response.
-   *
-   * @param buffers  - One buffer per page/image (PNG or JPEG)
-   * @param mimeType - MIME type of the original file before any conversion
-   * @param prompt   - The instruction prompt to accompany the document
-   * @returns Raw text response from the model (expected to be JSON)
+   * Send one or more image buffers to the LLM with a prompt (vision call).
+   * Used for document extraction — images are sent inline as base64.
    */
   extractDocument(
     buffers: Buffer[],
     mimeType: string,
     prompt: string,
   ): Promise<string>;
+
+  /**
+   * Send a text-only prompt to the LLM and return the raw response.
+   * Used for cross-document validation where no image is needed.
+   */
+  generateText(prompt: string): Promise<string>;
 }

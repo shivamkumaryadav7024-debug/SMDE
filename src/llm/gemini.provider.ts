@@ -54,4 +54,19 @@ export class GeminiProvider implements LLMProvider {
       .replace(/\s*```$/, "")
       .trim();
   }
+
+  async generateText(prompt: string): Promise<string> {
+    const model = this.client.getGenerativeModel({ model: this.modelName });
+
+    const result = await model.generateContent({
+      contents: [{ role: "user", parts: [{ text: prompt }] }],
+      generationConfig: { temperature: 0, topP: 1, topK: 1 },
+    });
+
+    const text = result.response.text();
+    return text
+      .replace(/^```(?:json)?\s*/i, "")
+      .replace(/\s*```$/, "")
+      .trim();
+  }
 }
