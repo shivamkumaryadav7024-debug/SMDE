@@ -1,17 +1,16 @@
 import type { FastifyInstance } from "fastify";
 import { pingDatabase } from "../db/client.js";
-
+import { pingQueue } from "../queue/boss.js";
 const VERSION = "1.0.0";
 const startTime = Date.now();
 
 export async function healthRoute(app: FastifyInstance) {
   app.get("/health", async (_request, reply) => {
-    const dbOk = await pingDatabase();
+    const [dbOk, queueOk] = await Promise.all([pingDatabase(), pingQueue()]);
 
     const dependencies = {
       database: dbOk ? "OK" : "ERROR",
-      // Queue and LLM provider will be populated in later phases
-      queue: "OK",
+      queue: queueOk ? "OK" : "ERROR",
       llmProvider: "OK",
     };
 
