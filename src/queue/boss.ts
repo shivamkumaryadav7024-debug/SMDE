@@ -20,51 +20,87 @@ let _boss: PgBoss | null = null;
 export async function initBoss(): Promise<PgBoss> {
   if (_boss) return _boss;
 
+  console.log("[queue] Initializing pg-boss...");
+
+  // ✅ Only use options that exist in v10 ConstructorOptions:
+  //    - deleteAfterHours is in MaintenanceOptions
+  //    - archiveFailedAfterSeconds is in MaintenanceOptions
+  //    - maintenanceIntervalSeconds is in MaintenanceOptions (NOT monitorIntervalSeconds)
+  //    - pollingIntervalSeconds is in JobPollingOptions (also part of ConstructorOptions)
   _boss = new PgBoss({
     connectionString: config.DATABASE_URL,
-    // Keep completed jobs for 24 h, failed jobs for 7 days
     deleteAfterHours: 24,
-    archiveFailedAfterSeconds: 604800, // 7 days
-  });
+    archiveFailedAfterSeconds: 60 * 60 * 24 * 7, // 7 days
+    maintenanceIntervalSeconds: 10,
+    pollingIntervalSeconds: 2,
+  } satisfies PgBoss.ConstructorOptions);
 
   _boss.on("error", (err) => {
     console.error("[queue] pg-boss error:", err);
   });
 
-  await _boss.start();
-  console.log("[queue] pg-boss started");
+  try {
+    await _boss.start();
+    console.log("[queue] pg-boss started successfully");
+
+    // ✅ v10 createQueue second arg is PgBoss.Queue which REQUIRES name.
+    //    Pass it as the name arg + rest as the Queue object with name included.
+    //    The overload is: createQueue(name: string, options?: PgBoss.Queue)
+    //    PgBoss.Queue = RetryOptions & ExpirationOptions & RetentionOptions & { name, policy?, deadLetter? }
+    //    So we pass name separately, then options without name — but the type
+    //    requires name in the options object too. We satisfy both:
+    await _boss.createQueue(QUEUE_NAME, {
+      name: QUEUE_NAME,
+      retentionHours: 24,
+      retryLimit: 1,
+      retryDelay: 5,
+      expireInHours: 1,
+    });
+    console.log(`[queue] Queue "${QUEUE_NAME}" ensured`);
+  } catch (err: unknown) {
+    // pg-boss throws if the queue already exists on some versions — ignore that
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.toLowerCase().includes("already exists")) {
+      console.log(`[queue] Queue "${QUEUE_NAME}" already exists, continuing`);
+    } else {
+      console.error("[queue] Failed to start pg-boss:", err);
+      _boss = null;
+      throw err;
+    }
+  }
+
   return _boss;
 }
 
 export function getBoss(): PgBoss {
-  if (!_boss)
-    throw new Error("pg-boss has not been initialised. Call initBoss() first.");
+  if (!_boss) {
+    throw new Error(
+      "pg-boss has not been initialised. Call initBoss() first."
+    );
+  }
   return _boss;
 }
 
 export async function pingQueue(): Promise<boolean> {
   try {
-    getBoss(); // throws if not initialised
+    getBoss();
     return true;
   } catch {
     return false;
   }
 }
 
-/**
- * Insert a row in our `jobs` table (for client-visible status polling)
- * and enqueue the work in pg-boss.
- *
- * Returns the jobId so the route can return it immediately.
- */
 export async function enqueueExtractionJob(
-  payload: Omit<ExtractionJobPayload, "jobId"> & { sessionId: string },
+  payload: Omit<ExtractionJobPayload, "jobId"> & { sessionId: string }
 ): Promise<string> {
-  // 1. Count pending jobs to derive an approximate queue position
   const pendingCount = await db.$count(jobs, eq(jobs.status, "QUEUED"));
   const queuePosition = pendingCount + 1;
 
-  // 2. Insert client-visible job row first
+  console.log(
+    `[queue] Enqueuing job for file: ${payload.fileName}, queue position: ${queuePosition}`
+  );
+
+  // Insert client-visible job row first so polling works immediately
   const [row] = await db
     .insert(jobs)
     .values({
@@ -81,17 +117,28 @@ export async function enqueueExtractionJob(
   if (!row) throw new Error("Failed to insert job row");
 
   const jobId = row.id;
+  console.log(`[queue] DB job row created: ${jobId}`);
 
-  // 3. Send to pg-boss with the same jobId so the worker can correlate
-  await getBoss().send(
+  // ✅ send() options type is SendOptions = JobOptions & ExpirationOptions
+  //    & RetentionOptions & RetryOptions & ConnectionOptions
+  const pgBossId = await getBoss().send(
     QUEUE_NAME,
-    { ...payload, jobId } satisfies ExtractionJobPayload,
+    { ...payload, jobId } as ExtractionJobPayload,
     {
+      expireInHours: 1,
       retryLimit: 1,
       retryDelay: 5,
-      expireInHours: 1,
-    },
+    } satisfies PgBoss.SendOptions
   );
 
+  if (!pgBossId) {
+    throw new Error(
+      `pg-boss rejected job for ${jobId} — queue may not exist or send was throttled`
+    );
+  }
+
+  console.log(
+    `[queue] ✅ Job sent to pg-boss: jobId=${jobId} pgBossId=${pgBossId}`
+  );
   return jobId;
 }

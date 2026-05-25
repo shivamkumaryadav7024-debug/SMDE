@@ -4,10 +4,8 @@ import { extractions, type NewExtraction } from "../db/schema.js";
 import { getLLMProvider } from "../llm/factory.js";
 import { EXTRACTION_PROMPT } from "../llm/prompt.js";
 import { computeSHA256 } from "../utils/hash.js";
-import { pdfToImages } from "../utils/pdf.js";
 import { daysUntilExpiry, isExpired } from "../utils/dateUtils.js";
 import { AppError } from "../middleware/errorHandler.js";
-import { randomUUID } from "crypto";
 
 export interface ExtractionParams {
   fileBuffer: Buffer;
@@ -43,8 +41,8 @@ export interface ExtractionResult {
   isDuplicate?: boolean;
 }
 
-// Shape of the JSON the LLM returns
-interface LLMExtractionOutput {
+// Shape of a single document entry the LLM returns in the array
+interface LLMDocumentEntry {
   detection?: {
     documentType?: string;
     documentName?: string;
@@ -73,6 +71,67 @@ interface LLMExtractionOutput {
   summary?: string;
 }
 
+// ---------------------------------------------------------------------------
+// JSON extraction helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Extract the outermost JSON array or object from a raw LLM response string.
+ *
+ * Handles the three most common Groq/LLaMA failure modes:
+ *   1. Response wrapped in ```json ... ``` fences
+ *   2. Preamble prose before the JSON  ("Here is the data:\n[...")
+ *   3. Trailing explanation after the closing bracket/brace
+ *
+ * We look for an array boundary first because our EXTRACTION_PROMPT
+ * explicitly asks for a JSON array; the object fallback is a safety net.
+ */
+function extractJSON(raw: string): string | null {
+  // Strip markdown code fences
+  const stripped = raw
+    .replace(/^```(?:json)?\s*/im, "")
+    .replace(/\s*```\s*$/im, "")
+    .trim();
+
+  // Prefer outermost array
+  const arrayStart = stripped.indexOf("[");
+  const arrayEnd = stripped.lastIndexOf("]");
+  if (arrayStart !== -1 && arrayEnd > arrayStart) {
+    return stripped.slice(arrayStart, arrayEnd + 1);
+  }
+
+  // Fall back to outermost object (single-doc response)
+  const objStart = stripped.indexOf("{");
+  const objEnd = stripped.lastIndexOf("}");
+  if (objStart !== -1 && objEnd > objStart) {
+    return stripped.slice(objStart, objEnd + 1);
+  }
+
+  return null;
+}
+
+function parseResponse(raw: string): unknown {
+  const extracted = extractJSON(raw);
+  if (!extracted) {
+    throw new SyntaxError("No JSON array or object found in LLM response");
+  }
+  return JSON.parse(extracted);
+}
+
+/**
+ * Normalise the parsed LLM output to an array.
+ * The prompt asks for an array, but guard against single-object responses.
+ */
+function normaliseToArray(parsed: unknown): LLMDocumentEntry[] {
+  if (Array.isArray(parsed)) return parsed as LLMDocumentEntry[];
+  if (parsed && typeof parsed === "object") return [parsed as LLMDocumentEntry];
+  return [];
+}
+
+// ---------------------------------------------------------------------------
+// Main extraction function
+// ---------------------------------------------------------------------------
+
 export async function runExtraction(
   params: ExtractionParams,
 ): Promise<ExtractionResult> {
@@ -94,38 +153,34 @@ export async function runExtraction(
     return { ...rowToResult(existing), isDuplicate: true };
   }
 
-  // ── 3. Prepare image buffers (PDF → PNG pages, images passed directly) ───
-  let imageBuffers: Buffer[];
+  // ── 3. Build file parts for the LLM ─────────────────────────────────────
+  const llmParts = [{ buffer: fileBuffer, mimeType }];
+  const llm = await getLLMProvider();
 
-  if (mimeType === "application/pdf") {
-    imageBuffers = await pdfToImages(fileBuffer);
-  } else {
-    // JPEG / PNG — wrap in array for uniform interface
-    imageBuffers = [fileBuffer];
-  }
+  // ── 4. Call LLM — attempt 1: primary extraction ─────────────────────────
+  let rawResponse = await llm.extractDocument(llmParts, EXTRACTION_PROMPT);
+  let parsedArray: LLMDocumentEntry[] | null = null;
 
-  // ── 4. Call LLM with one retry on JSON parse failure ────────────────────
-  const llm = getLLMProvider();
-  let parsed: LLMExtractionOutput | null = null;
-  let rawResponse = "";
-  let extractionId: string | undefined;
-
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    rawResponse = await llm.extractDocument(
-      imageBuffers,
-      mimeType,
-      EXTRACTION_PROMPT,
-    );
+  try {
+    parsedArray = normaliseToArray(parseResponse(rawResponse));
+  } catch {
+    // ── attempt 2: send a repair prompt with the raw response ────────────
+    // We ask the LLM to clean up its own output rather than re-OCR the file.
+    const repairPrompt =
+      `The following text was supposed to be a valid JSON array of maritime ` +
+      `document objects but could not be parsed. Extract and return ONLY the ` +
+      `valid JSON array. No explanation, no markdown, no code fences — raw JSON only.\n\n` +
+      rawResponse;
 
     try {
-      parsed = JSON.parse(rawResponse) as LLMExtractionOutput;
-      break;
+      const repairRaw = await llm.generateText(repairPrompt);
+      rawResponse = repairRaw;
+      parsedArray = normaliseToArray(parseResponse(repairRaw));
     } catch {
-      if (attempt === 2) {
-        // Store the failed record so the raw response is available for review
-        extractionId = randomUUID();
-        await db.insert(extractions).values({
-          id: extractionId,
+      // Both attempts failed — store the failed record for debugging, never silently drop.
+      const [failedRow] = await db
+        .insert(extractions)
+        .values({
           sessionId,
           jobId: jobId ?? null,
           fileName,
@@ -133,71 +188,120 @@ export async function runExtraction(
           mimeType,
           rawLlmResponse: rawResponse,
           processingTimeMs: Date.now() - startedAt,
-        });
+          status: "FAILED",
+        } satisfies NewExtraction)
+        .returning({ id: extractions.id });
 
-        throw new AppError(
-          "LLM_JSON_PARSE_FAIL",
-          "Document extraction failed after retry. The raw response has been stored for review.",
-          extractionId,
-        );
-      }
+      throw new AppError(
+        "LLM_JSON_PARSE_FAIL",
+        "Document extraction failed after retry. The raw response has been stored for review.",
+        failedRow?.id,
+      );
     }
   }
 
-  if (!parsed) {
-    throw new AppError("LLM_JSON_PARSE_FAIL", "Unexpected extraction failure.");
-  }
+  // ── 5. Guard against empty array ─────────────────────────────────────────
+  if (!parsedArray || parsedArray.length === 0) {
+    const [failedRow] = await db
+      .insert(extractions)
+      .values({
+        sessionId,
+        jobId: jobId ?? null,
+        fileName,
+        fileHash,
+        mimeType,
+        rawLlmResponse: rawResponse,
+        processingTimeMs: Date.now() - startedAt,
+        status: "FAILED",
+      } satisfies NewExtraction)
+      .returning({ id: extractions.id });
 
-  // ── 5. Compute derived validity fields ───────────────────────────────────
-  const expiryRaw = parsed.validity?.dateOfExpiry ?? null;
-  const computedIsExpired = isExpired(expiryRaw);
-  const computedDaysUntilExpiry = daysUntilExpiry(expiryRaw);
-
-  const validityWithComputed = {
-    ...(parsed.validity ?? {}),
-    isExpired: computedIsExpired,
-    daysUntilExpiry: computedDaysUntilExpiry,
-  };
-
-  // ── 6. Persist ────────────────────────────────────────────────────────────
-  const row: NewExtraction = {
-    sessionId,
-    jobId: jobId ?? null,
-    fileName,
-    fileHash,
-    mimeType,
-    documentType: parsed.detection?.documentType ?? null,
-    documentName: parsed.detection?.documentName ?? null,
-    applicableRole: parsed.detection?.applicableRole ?? null,
-    category: parsed.detection?.category ?? null,
-    confidence: parsed.detection?.confidence ?? null,
-    holderName: parsed.holder?.fullName ?? null,
-    dateOfBirth: parsed.holder?.dateOfBirth ?? null,
-    sirbNumber: parsed.holder?.sirbNumber ?? null,
-    passportNumber: parsed.holder?.passportNumber ?? null,
-    fields: parsed.fields ?? null,
-    validity: validityWithComputed,
-    compliance: parsed.compliance ?? null,
-    medicalData: parsed.medicalData ?? null,
-    flags: parsed.flags ?? null,
-    isExpired: computedIsExpired,
-    summary: parsed.summary ?? null,
-    processingTimeMs: Date.now() - startedAt,
-  };
-
-  const [inserted] = await db.insert(extractions).values(row).returning();
-
-  if (!inserted) {
     throw new AppError(
-      "INTERNAL_ERROR",
-      "Failed to persist extraction record.",
+      "LLM_JSON_PARSE_FAIL",
+      "LLM returned an empty document array.",
+      failedRow?.id,
     );
   }
 
-  return rowToResult(inserted);
+  // ── 6. LOW confidence retry ───────────────────────────────────────────────
+  // If the first detected document came back LOW confidence, retry once with
+  // the file name and MIME type as additional hints.
+  if (parsedArray[0]?.detection?.confidence === "LOW") {
+    const focusedPrompt =
+      `${EXTRACTION_PROMPT}\n\n` +
+      `HINT: The file name is "${fileName}" and the MIME type is "${mimeType}". ` +
+      `Use these as additional signals to improve document type detection.`;
+
+    try {
+      const retryRaw = await llm.extractDocument(llmParts, focusedPrompt);
+      const retryArray = normaliseToArray(parseResponse(retryRaw));
+      const retryConfidence = retryArray[0]?.detection?.confidence;
+
+      if (retryConfidence === "HIGH" || retryConfidence === "MEDIUM") {
+        parsedArray = retryArray;
+        rawResponse = retryRaw;
+      }
+    } catch {
+      // Keep original result — don't fail the whole job over a failed confidence retry
+    }
+  }
+
+  // ── 7. Persist all detected documents ────────────────────────────────────
+  // Maritime PDFs commonly bundle 10–20+ certificates in one file.
+  // Each detected document becomes its own extraction row so the session
+  // summary, validation, and report see every certificate individually.
+  // We return the first row as the "primary" result for the job/sync response.
+  const insertedRows: Array<typeof extractions.$inferSelect> = [];
+
+  for (const doc of parsedArray) {
+    const expiryRaw = doc.validity?.dateOfExpiry ?? null;
+    const computedIsExpired = isExpired(expiryRaw);
+    const computedDaysUntilExpiry = daysUntilExpiry(expiryRaw);
+
+    const row: NewExtraction = {
+      sessionId,
+      jobId: jobId ?? null,
+      fileName,
+      fileHash,
+      mimeType,
+      documentType: doc.detection?.documentType ?? null,
+      documentName: doc.detection?.documentName ?? null,
+      applicableRole: doc.detection?.applicableRole ?? null,
+      category: doc.detection?.category ?? null,
+      confidence: doc.detection?.confidence ?? null,
+      holderName: doc.holder?.fullName ?? null,
+      dateOfBirth: doc.holder?.dateOfBirth ?? null,
+      sirbNumber: doc.holder?.sirbNumber ?? null,
+      passportNumber: doc.holder?.passportNumber ?? null,
+      fields: doc.fields ?? null,
+      validity: {
+        ...(doc.validity ?? {}),
+        isExpired: computedIsExpired,
+        daysUntilExpiry: computedDaysUntilExpiry,
+      },
+      compliance: doc.compliance ?? null,
+      medicalData: doc.medicalData ?? null,
+      flags: doc.flags ?? null,
+      isExpired: computedIsExpired,
+      summary: doc.summary ?? null,
+      rawLlmResponse: rawResponse,
+      processingTimeMs: Date.now() - startedAt,
+      status: "COMPLETE",
+    };
+
+    const [inserted] = await db.insert(extractions).values(row).returning();
+    if (inserted) insertedRows.push(inserted);
+  }
+
+  const primaryRow = insertedRows[0];
+  if (!primaryRow) {
+    throw new AppError("INTERNAL_ERROR", "Failed to persist extraction record.");
+  }
+
+  return rowToResult(primaryRow);
 }
 
-// ── Helper: map DB row to ExtractionResult ──────────────────────────────────
+// ── Helper: map DB row → ExtractionResult ────────────────────────────────────
 
 function rowToResult(row: typeof extractions.$inferSelect): ExtractionResult {
   return {

@@ -70,7 +70,7 @@ export class AnthropicProvider implements LLMProvider {
     });
 
     // Extract text from response
-    if (response.content[0].type === "text") {
+    if (response.content && response.content.length > 0 && response.content[0].type === "text") {
       return response.content[0].text;
     }
 
@@ -92,7 +92,7 @@ export class AnthropicProvider implements LLMProvider {
       ],
     });
 
-    if (response.content[0].type === "text") {
+    if (response.content && response.content.length > 0 && response.content[0].type === "text") {
       return response.content[0].text;
     }
 

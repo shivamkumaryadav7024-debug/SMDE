@@ -66,6 +66,11 @@ export const extractions = pgTable("extractions", {
   // Stored when LLM returns unparseable JSON — for debugging
   rawLlmResponse: text("raw_llm_response"),
 
+  // Lifecycle: COMPLETE | FAILED
+  // COMPLETE = LLM returned valid JSON and data was persisted
+  // FAILED   = LLM failed to return parseable JSON after repair attempt
+  status: text("status").notNull().default("COMPLETE"),
+
   processingTimeMs: integer("processing_time_ms"),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()

@@ -4,8 +4,7 @@ export interface LLMProvider {
    * Used for document extraction — images are sent inline as base64.
    */
   extractDocument(
-    buffers: Buffer[],
-    mimeType: string,
+    parts: Array<{ buffer: Buffer; mimeType: string }>,
     prompt: string,
   ): Promise<string>;
 

@@ -15,17 +15,16 @@ export class GeminiProvider implements LLMProvider {
   }
 
   async extractDocument(
-    buffers: Buffer[],
-    _mimeType: string,
+    parts: Array<{ buffer: Buffer; mimeType: string }>,
     prompt: string,
   ): Promise<string> {
     const model = this.client.getGenerativeModel({ model: this.modelName });
 
     // Build inline image parts — one per page/buffer (always PNG after pdf2pic conversion)
-    const imageParts: Part[] = buffers.map((buf) => ({
+    const imageParts: Part[] = parts.map(({ buffer }) => ({
       inlineData: {
         mimeType: "image/png",
-        data: buf.toString("base64"),
+        data: buffer.toString("base64"),
       },
     }));
 

@@ -2,7 +2,7 @@ import { eq } from "drizzle-orm";
 import { db } from "../db/client.js";
 import { sessions, extractions, jobs } from "../db/schema.js";
 import { AppError } from "../middleware/errorHandler.js";
-import { isExpired, isExpiringSoon } from "../utils/dateUtils.js";
+import { isExpiringSoon } from "../utils/dateUtils.js";
 
 export type OverallHealth = "OK" | "WARN" | "CRITICAL";
 export type DetectedRole = "DECK" | "ENGINE" | "BOTH" | "N/A";
@@ -73,10 +73,7 @@ export async function getSessionDetail(
   ]);
 
   if (!sessionRow)
-    throw new AppError(
-      "SESSION_NOT_FOUND",
-      `Session '${sessionId}' not found.`,
-    );
+    throw new AppError("SESSION_NOT_FOUND", `Session '${sessionId}' not found.`);
 
   const documents: SessionSummaryDocument[] = extractionRows.map((row) => {
     const flags = Array.isArray(row.flags)
@@ -120,37 +117,37 @@ export async function getSessionDetail(
 
 /**
  * Majority-vote on applicable_role across all extractions.
- * Ties default to BOTH.
+ *
+ * FIX: Previously N/A votes from role-agnostic docs (PEME, DRUG_TEST) were
+ * counted and could break ties between DECK and ENGINE. We now ignore N/A
+ * votes entirely when at least one meaningful role (DECK or ENGINE) is present.
+ *
+ * Session with 3 DECK + 1 N/A + 3 ENGINE → BOTH (tied meaningful roles)
+ * Session with 3 ENGINE + 3 N/A           → ENGINE (only meaningful role)
+ * Session with all N/A                    → N/A
  */
 export function deriveRole(
   rows: Array<{ applicableRole: string | null }>,
 ): DetectedRole {
-  const counts: Record<string, number> = {
-    DECK: 0,
-    ENGINE: 0,
-    BOTH: 0,
-    "N/A": 0,
-  };
+  let deckCount = 0;
+  let engineCount = 0;
+  let bothCount = 0;
 
   for (const row of rows) {
     const role = row.applicableRole?.toUpperCase();
-    if (role && role in counts) {
-      counts[role] = (counts[role] ?? 0) + 1;
-    }
+    if (role === "DECK")   deckCount++;
+    else if (role === "ENGINE") engineCount++;
+    else if (role === "BOTH")   bothCount++;
+    // N/A intentionally ignored
   }
 
-  const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]);
-  const top = sorted[0];
+  const hasDeck   = deckCount + bothCount > 0;
+  const hasEngine = engineCount + bothCount > 0;
 
-  if (!top || top[1] === 0) return "N/A";
-
-  // If DECK and ENGINE are tied, call it BOTH
-  const deckCount = counts["DECK"] ?? 0;
-  const engineCount = counts["ENGINE"] ?? 0;
-  if (deckCount > 0 && engineCount > 0 && deckCount === engineCount)
-    return "BOTH";
-
-  return top[0] as DetectedRole;
+  if (hasDeck && hasEngine) return "BOTH";
+  if (hasDeck)   return "DECK";
+  if (hasEngine) return "ENGINE";
+  return "N/A";
 }
 
 /**
@@ -169,11 +166,9 @@ export function deriveHealth(
 ): OverallHealth {
   for (const row of rows) {
     if (row.isExpired) return "CRITICAL";
-
     const flags = Array.isArray(row.flags)
       ? (row.flags as Array<{ severity: string }>)
       : [];
-
     if (flags.some((f) => f.severity === "CRITICAL")) return "CRITICAL";
   }
 
@@ -181,11 +176,9 @@ export function deriveHealth(
     const flags = Array.isArray(row.flags)
       ? (row.flags as Array<{ severity: string }>)
       : [];
-
     if (flags.some((f) => f.severity === "HIGH" || f.severity === "MEDIUM")) {
       return "WARN";
     }
-
     const validity = row.validity as { dateOfExpiry?: string } | null;
     if (validity?.dateOfExpiry && isExpiringSoon(validity.dateOfExpiry, 90)) {
       return "WARN";

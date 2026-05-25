@@ -8,18 +8,49 @@ let _instance: LLMProvider | null = null;
  * Returns a singleton LLMProvider based on the LLM_PROVIDER env var.
  * Adding a new provider: implement LLMProvider, add a case here.
  */
-export function getLLMProvider(): LLMProvider {
+export async function getLLMProvider(): Promise<LLMProvider> {
   if (_instance) return _instance;
 
   switch (config.LLM_PROVIDER) {
     case "gemini":
-      _instance = new GeminiProvider(config.LLM_API_KEY, config.LLM_MODEL);
+      _instance = new GeminiProvider(
+        config.LLM_API_KEY,
+        config.LLM_MODEL
+      );
       break;
+
+    case "anthropic": {
+      const { AnthropicProvider } = await import(
+        "./anthropic.provider.js"
+      );
+
+      _instance = new AnthropicProvider(
+        config.LLM_API_KEY,
+        config.LLM_MODEL
+      );
+
+      break;
+    }
+
+    case "groq": {
+      const { GroqProvider } = await import(
+        "./groq.provider.js"
+      );
+
+      _instance = new GroqProvider(
+        config.LLM_API_KEY,
+        config.LLM_MODEL
+      );
+
+      break;
+    }
+
     default: {
-      // TypeScript exhaustiveness check — will error at compile time if a new
-      // enum value is added to LLM_PROVIDER without handling it here.
       const _exhaustive: never = config.LLM_PROVIDER;
-      throw new Error(`Unknown LLM_PROVIDER: ${_exhaustive}`);
+
+      throw new Error(
+        `Unknown LLM_PROVIDER: ${_exhaustive}`
+      );
     }
   }
 
