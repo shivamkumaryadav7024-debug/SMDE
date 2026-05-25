@@ -20,9 +20,72 @@ TRAIN_TRAINER | HAZMAT | FLAG_STATE | OTHER
 
 Return ONLY a valid JSON array — one object per document found. No markdown. No code fences. No preamble.
 
-[{"detection":{"documentType":"SHORT_CODE","documentName":"Full name","category":"IDENTITY|CERTIFICATION|STCW_ENDORSEMENT|MEDICAL|TRAINING|FLAG_STATE|OTHER","applicableRole":"DECK|ENGINE|BOTH|N/A","isRequired":true,"confidence":"HIGH|MEDIUM|LOW","detectionReason":"One sentence"},"holder":{"fullName":"string or null","dateOfBirth":"DD/MM/YYYY or null","nationality":"string or null","passportNumber":"string or null","sirbNumber":"string or null","rank":"string or null","photo":"PRESENT|ABSENT"},"fields":[{"key":"snake_case_key","label":"Human label","value":"extracted value","importance":"CRITICAL|HIGH|MEDIUM|LOW","status":"OK|EXPIRED|WARNING|MISSING|N/A"}],"validity":{"dateOfIssue":"string or null","dateOfExpiry":"string or null","isExpired":false,"daysUntilExpiry":null,"revalidationRequired":null},"compliance":{"issuingAuthority":"string","regulationReference":"string or null","imoModelCourse":"string or null","recognizedAuthority":true,"limitations":"string or null"},"medicalData":{"fitnessResult":"FIT|UNFIT|N/A","drugTestResult":"NEGATIVE|POSITIVE|N/A","restrictions":"string or null","specialNotes":"string or null","expiryDate":"string or null"},"flags":[{"severity":"CRITICAL|HIGH|MEDIUM|LOW","message":"string"}],"summary":"Two-sentence summary."}]
+[
+  {
+    "detection": {
+      "documentType": "SHORT_CODE",
+      "documentName": "Full human-readable name of this specific document (e.g. Certificate of Competency — Master Unlimited Tonnage)",
+      "category": "IDENTITY",
+      "applicableRole": "DECK",
+      "isRequired": true,
+      "confidence": "HIGH",
+      "detectionReason": "One sentence explaining how you identified this document."
+    },
+    "holder": {
+      "fullName": "string or null",
+      "dateOfBirth": "DD/MM/YYYY or null",
+      "nationality": "string or null",
+      "passportNumber": "string or null",
+      "sirbNumber": "string or null",
+      "rank": "string or null",
+      "photo": "PRESENT or ABSENT"
+    },
+    "fields": [
+      {
+        "key": "snake_case_key",
+        "label": "Human-readable label",
+        "value": "extracted value as string",
+        "importance": "CRITICAL",
+        "status": "OK"
+      }
+    ],
+    "validity": {
+      "dateOfIssue": "string or null",
+      "dateOfExpiry": "string or null",
+      "isExpired": false,
+      "daysUntilExpiry": null,
+      "revalidationRequired": null
+    },
+    "compliance": {
+      "issuingAuthority": "string",
+      "regulationReference": "string or null",
+      "imoModelCourse": "string or null",
+      "recognizedAuthority": true,
+      "limitations": "string or null"
+    },
+    "medicalData": {
+      "fitnessResult": "FIT or UNFIT or N/A",
+      "drugTestResult": "NEGATIVE or POSITIVE or N/A",
+      "restrictions": "string or null",
+      "specialNotes": "string or null",
+      "expiryDate": "string or null"
+    },
+    "flags": [
+      {
+        "severity": "CRITICAL or HIGH or MEDIUM or LOW",
+        "message": "string"
+      }
+    ],
+    "summary": "Two-sentence plain English summary of what this document confirms about the holder."
+  }
+]
 
-RULES: Always return a JSON ARRAY. Extract EVERY certificate in the file. One array entry per certificate.`;
+RULES:
+- Always return a JSON ARRAY, even for a single document.
+- Extract EVERY certificate found in the file — one array entry per certificate.
+- "documentName" must be the real human-readable name of this specific document, NOT the literal text "Full name" or any other placeholder.
+- "category" must be exactly ONE of: IDENTITY | CERTIFICATION | STCW_ENDORSEMENT | MEDICAL | TRAINING | FLAG_STATE | OTHER — never pipe-separated combinations.
+- "applicableRole" must be exactly ONE of: DECK | ENGINE | BOTH | N/A.`;
 
 // ---------------------------------------------------------------------------
 // VALIDATION PROMPT

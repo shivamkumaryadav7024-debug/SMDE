@@ -239,12 +239,26 @@ export async function buildReport(sessionId: string) {
     recommendation: string;
   }> = [];
 
-  // From individual document flags
+// From individual document flags — only MEDIUM and above are actionable
+  const INFORMATIONAL_PATTERNS = [
+    "not yet expired",
+    "still valid",
+    "is valid",
+  ];
+
   for (const row of extractionRows) {
     const flags = Array.isArray(row.flags)
       ? (row.flags as Array<{ severity: string; message: string }>)
       : [];
     for (const flag of flags) {
+      // Skip LOW-severity flags that are purely informational
+      if (flag.severity === "LOW") continue;
+      // Skip messages that confirm a good state rather than flag a problem
+      const isInformational = INFORMATIONAL_PATTERNS.some((p) =>
+        flag.message.toLowerCase().includes(p),
+      );
+      if (isInformational) continue;
+
       complianceIssues.push({
         severity:       flag.severity,
         source:         row.documentType ?? "UNKNOWN",
